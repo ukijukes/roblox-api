@@ -1,50 +1,109 @@
-import express from "express";
-import fetch from "node-fetch";
+const express = require("express");
+const axios = require("axios");
+const cheerio = require("cheerio");
 
 const app = express();
 
-// Allow Roblox and browsers to request your API (CORS)
-app.use((req, res, next) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  next();
-});
+/* ------------------------
+   1. SCRAPE PUBLIC GAMES
+------------------------ */
+async function getPublicPlaces(userId) {
+    const url = `https://www.roblox.com/users/${userId}/creations`;
 
-// Fetch gamepasses, shirts, and pants for a specific user
-app.get("/items/:userId", async (req, res) => {
-  const userId = req.params.userId;
+    const html = await axios.get(url, {
+        headers: { "User-Agent": "Mozilla/5.0" }
+    }).then(res => res.data);
 
-  try {
-    // Fetch gamepasses
-    const gamepasses = await fetch(
-      `https://games.roblox.com/v1/users/${userId}/game-passes?sortOrder=Asc&limit=100`
-    ).then(r => r.json());
+    const $ = cheerio.load(html);
+    const placeIds = new Set();
 
-    // Fetch shirts (asset type 11)
-    const shirts = await fetch(
-      `https://inventory.roblox.com/v1/users/${userId}/assets/11?limit=100`
-    ).then(r => r.json());
-
-    // Fetch pants (asset type 12)
-    const pants = await fetch(
-      `https://inventory.roblox.com/v1/users/${userId}/assets/12?limit=100`
-    ).then(r => r.json());
-
-    // Respond with all collected items
-    res.json({
-      success: true,
-      gamepasses: gamepasses.data || [],
-      shirts: shirts.data || [],
-      pants: pants.data || []
+    $("[data-placeid]").each((_, el) => {
+        const id = $(el).attr("data-placeid");
+        if (id && !isNaN(id)) placeIds.add(id);
     });
 
-  } catch (err) {
-    console.error("API Error:", err);
-    res.status(500).json({ success: false, error: "Failed to fetch user items" });
-  }
+    $("[data-universe-id]").each((_, el) => {
+        const id = $(el).attr("data-universe-id");
+        if (id && !isNaN(id)) placeIds.add(id);
+    });
+
+    return [...placeIds];
+}
+
+/* ------------------------
+   2. FETCH GAMEPASSES
+------------------------ */
+async function getGamepasses(placeId) {
+    try {
+        const url = `https://games.roblox.com/v1/games/${placeId}/game-passes`;
+        const res = await axios.get(url);
+        return res.data.data || [];
+    } catch {
+        return [];
+    }
+}
+
+/* ------------------------
+   3. FETCH USER CLOTHING
+------------------------ */
+async function getClothing(userId) {
+    const url =
+        `https://catalog.roblox.com/v1/search/items` +
+        `?creatorTargetId=${userId}` +
+        `&limit=120&creatorType=User&salesType=All&sortType=Updated`;
+
+    try {
+        const res = await axios.get(url);
+        return res.data.data.map(item => ({
+            id: item.id,
+            name: item.name,
+            price: item.price,
+            itemType: item.itemType
+        }));
+    } catch {
+        return [];
+    }
+}
+
+/* ------------------------
+   4. COMBINED ENDPOINT
+------------------------ */
+app.get("/items/:userId", async (req, res) => {
+    const userId = req.params.userId;
+
+    try {
+        const places = await getPublicPlaces(userId);
+
+        let gamepasses = [];
+        for (const placeId of places) {
+            const passes = await getGamepasses(placeId);
+            gamepasses = gamepasses.concat(
+                passes.map(p => ({
+                    id: p.id,
+                    name: p.name,
+                    price: p.price,
+                    placeId,
+                    type: "Gamepass"
+                }))
+            );
+        }
+
+        const clothing = await getClothing(userId);
+
+        res.json({
+            userId,
+            publicPlaces: places,
+            totalGamepasses: gamepasses.length,
+            totalClothingItems: clothing.length,
+            gamepasses,
+            clothing
+        });
+
+    } catch (err) {
+        res.json({ error: "Failed to fetch items", details: err.message });
+    }
 });
 
-// Start server
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log("Server running on port", PORT));
+   

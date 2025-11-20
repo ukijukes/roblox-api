@@ -1,109 +1,90 @@
 const express = require("express");
-const axios = require("axios");
-const cheerio = require("cheerio");
+const fetch = require("node-fetch");
+const cors = require("cors");
 
 const app = express();
+app.use(cors());
 
-/* ------------------------
-   1. SCRAPE PUBLIC GAMES
------------------------- */
-async function getPublicPlaces(userId) {
-    const url = `https://www.roblox.com/users/${userId}/creations`;
-
-    const html = await axios.get(url, {
-        headers: { "User-Agent": "Mozilla/5.0" }
-    }).then(res => res.data);
-
-    const $ = cheerio.load(html);
-    const placeIds = new Set();
-
-    $("[data-placeid]").each((_, el) => {
-        const id = $(el).attr("data-placeid");
-        if (id && !isNaN(id)) placeIds.add(id);
-    });
-
-    $("[data-universe-id]").each((_, el) => {
-        const id = $(el).attr("data-universe-id");
-        if (id && !isNaN(id)) placeIds.add(id);
-    });
-
-    return [...placeIds];
+// Helper: fetch JSON safely
+async function getJSON(url) {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    return res.json();
 }
 
-/* ------------------------
-   2. FETCH GAMEPASSES
------------------------- */
-async function getGamepasses(placeId) {
-    try {
-        const url = `https://games.roblox.com/v1/games/${placeId}/game-passes`;
-        const res = await axios.get(url);
-        return res.data.data || [];
-    } catch {
-        return [];
-    }
-}
-
-/* ------------------------
-   3. FETCH USER CLOTHING
------------------------- */
-async function getClothing(userId) {
-    const url =
-        `https://catalog.roblox.com/v1/search/items` +
-        `?creatorTargetId=${userId}` +
-        `&limit=120&creatorType=User&salesType=All&sortType=Updated`;
-
-    try {
-        const res = await axios.get(url);
-        return res.data.data.map(item => ({
-            id: item.id,
-            name: item.name,
-            price: item.price,
-            itemType: item.itemType
-        }));
-    } catch {
-        return [];
-    }
-}
-
-/* ------------------------
-   4. COMBINED ENDPOINT
------------------------- */
-app.get("/items/:userId", async (req, res) => {
+// Get user's public places
+app.get("/places/:userId", async (req, res) => {
     const userId = req.params.userId;
 
-    try {
-        const places = await getPublicPlaces(userId);
+    const url = `https://develop.roblox.com/v1/users/${userId}/places?limit=100`;
 
-        let gamepasses = [];
-        for (const placeId of places) {
-            const passes = await getGamepasses(placeId);
-            gamepasses = gamepasses.concat(
-                passes.map(p => ({
-                    id: p.id,
-                    name: p.name,
-                    price: p.price,
-                    placeId,
-                    type: "Gamepass"
-                }))
-            );
-        }
+    const data = await getJSON(url);
+    if (!data) return res.status(500).json({ error: "API error fetching places" });
 
-        const clothing = await getClothing(userId);
-
-        res.json({
-            userId,
-            publicPlaces: places,
-            totalGamepasses: gamepasses.length,
-            totalClothingItems: clothing.length,
-            gamepasses,
-            clothing
-        });
-
-    } catch (err) {
-        res.json({ error: "Failed to fetch items", details: err.message });
-    }
+    res.json(data);
 });
 
+// Get gamepasses for a place
+app.get("/gamepasses/:placeId", async (req, res) => {
+    const placeId = req.params.placeId;
+
+    const url = `https://games.roblox.com/v1/games/${placeId}/game-passes?limit=100`;
+
+    const data = await getJSON(url);
+    if (!data) return res.status(500).json({ error: "API error fetching gamepasses" });
+
+    res.json(data);
+});
+
+// Get user's clothing items (shirts, pants, tshirts)
+app.get("/clothing/:userId", async (req, res) => {
+    const userId = req.params.userId;
+
+    const url = `https://catalog.roblox.com/v1/search/items?creatorTargetId=${userId}&creatorType=User&category=Clothing&limit=120&sortOrder=Asc`;
+
+    const data = await getJSON(url);
+    if (!data) return res.status(500).json({ error: "API error fetching clothing" });
+
+    res.json(data);
+});
+
+// Full combined fetch: places → gamepasses → clothing
+app.get("/full/:userId", async (req, res) => {
+    const userId = req.params.userId;
+
+    // Get user's public places
+    const placesURL = `https://develop.roblox.com/v1/users/${userId}/places?limit=100`;
+    const placesData = await getJSON(placesURL);
+
+    if (!placesData) return res.status(500).json({ error: "could not fetch places" });
+
+    const placeIds = placesData.data.map(p => p.id);
+
+    // Fetch all gamepasses for each place
+    let allGamepasses = [];
+
+    for (const placeId of placeIds) {
+        const gpURL = `https://games.roblox.com/v1/games/${placeId}/game-passes?limit=100`;
+        const gpData = await getJSON(gpURL);
+        if (gpData && gpData.data) {
+            allGamepasses.push(...gpData.data.map(g => ({ ...g, placeId })));
+        }
+    }
+
+    // Fetch clothing
+    const clothingURL = `https://catalog.roblox.com/v1/search/items?creatorTargetId=${userId}&creatorType=User&category=Clothing&limit=120&sortOrder=Asc`;
+    const clothingData = await getJSON(clothingURL);
+
+    res.json({
+        places: placesData.data,
+        gamepasses: allGamepasses,
+        clothing: clothingData?.data ?? []
+    });
+});
+
+// PORT (Render assigns its own)
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log("Server running on port", PORT));
-   
+
+app.listen(PORT, () => {
+    console.log("Server running on port " + PORT);
+});

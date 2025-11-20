@@ -1,14 +1,14 @@
 {
-  "name": "roblox-api-server",
+  "name": "roblox-item-fetcher",
   "version": "1.0.0",
-  "description": "API to fetch Roblox user gamepasses and clothing",
   "main": "server.js",
+  "type": "module",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "node-fetch": "^3.3.2"
-  },
-  "type": "module"
+    "express": "^4.19.2",
+    "node-fetch": "^3.3.2",
+    "cors": "^2.8.5"
+  }
 }
